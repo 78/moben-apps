@@ -4,12 +4,11 @@ This directory is a minimal Moben remote app, "Computer Status". The app runs on
 
 ## Running
 
-1. In Moben Console, open "Developer apps" and create a developer key. Copy it; it is shown only once. Every app of the account uses the same key.
-2. Install Node.js 20.12 or newer, then run `npm install` in this directory. The SDK `@moben-ai/app-sdk` comes from npm.
-3. Copy `.env.example` to `.env` and fill in the key.
-4. Run `npm start`. When `[machine] online` appears, open "Computer Status" from the app list on the device. The app appears in Console the first time it connects.
+1. Install Node.js 20.12 or newer, then run `npm install` in this directory. The SDK `@moben-ai/app-sdk` comes from npm.
+2. Run `npx moben login` and open the link it prints: sign in to Moben and approve. The developer key is saved for this computer and every app on it uses it. `npx moben whoami` shows the account and its apps.
+3. Run `npm start`. When `[machine] online` appears, open "Computer Status" from the app list on the device. The app appears in Console the first time it connects.
 
-Keep the key in `.env` or an environment variable. Never put it in code or commit it.
+On servers and in CI, create a key in Moben Console under "Developer apps" and set `MOBEN_DEVELOPER_KEY` in the environment or in `.env` instead. Never put a key in code or commit it.
 
 ## App structure
 
@@ -42,6 +41,7 @@ Keep the key in `.env` or an environment variable. Never put it in code or commi
 
 ## Self-test checklist
 
+- Before connecting, run `npx moben validate` and `npx moben tool get_computer_status`. They run the app locally with the cloud's checks and print the page and tool result; fix every error and warning.
 - After starting, the log shows `online`. If the handshake is rejected, fix the manifest according to the issues in the log and restart.
 - Open the home page and every subpage on the device and check the content, with the device language set to both English and Chinese.
 - Hold the voice key and ask something that triggers each tool (for example "What are my computer's specs?") and check that the answer uses fresh data.

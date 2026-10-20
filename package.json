@@ -7,10 +7,12 @@
     "node": ">=20.12"
   },
   "scripts": {
-    "start": "tsx app.ts"
+    "start": "tsx app.ts",
+    "dev": "moben dev",
+    "check": "moben validate"
   },
   "dependencies": {
-    "@moben-ai/app-sdk": "^0.3.1"
+    "@moben-ai/app-sdk": "^0.4.0"
   },
   "devDependencies": {
     "tsx": "^4.19.0"
