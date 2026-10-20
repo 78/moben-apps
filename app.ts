@@ -1,10 +1,11 @@
 import { readFileSync, statfsSync } from 'node:fs';
 import os from 'node:os';
+import { join } from 'node:path';
 import { connect, createAppTranslator, defineApp, lineIcon, md, page, resolveAppLocale, type AppContext } from '@moben-ai/app-sdk';
 
-// Read MOBEN_DEVELOPER_KEY from .env when present, so starting the app is the
-// same command on macOS, Linux and Windows.
-try { process.loadEnvFile('.env'); } catch { /* use the shell environment */ }
+// Read MOBEN_DEVELOPER_KEY from .env when present (servers and CI; `moben login`
+// needs no .env), so starting the app is the same command on every system.
+try { process.loadEnvFile(join(__dirname, '.env')); } catch { /* use the shell environment */ }
 
 const HOSTNAME = os.hostname().replace(/\.local$/, '');
 

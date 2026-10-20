@@ -12,7 +12,7 @@
     "check": "moben validate"
   },
   "dependencies": {
-    "@moben-ai/app-sdk": "^0.4.0"
+    "@moben-ai/app-sdk": "^0.4.2"
   },
   "devDependencies": {
     "tsx": "^4.19.0"
