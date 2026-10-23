@@ -2,7 +2,7 @@
 
 Follow and steer the Codex tasks on your computer from a Moben e-ink device, by voice: browse your tasks, start new ones, watch a running task, and approve commands and file changes on the device.
 
-> Preview: this needs `@moben-ai/app-sdk` 0.5.0 and Moben device firmware 1.8.5, which are not released yet. The npm package below is not published yet either.
+> Voice capture and streamed task pages need Moben device firmware 1.8.5 or later.
 
 ## Requirements
 

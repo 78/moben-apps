@@ -1,7 +1,6 @@
 {
   "name": "@moben-ai/codex",
   "version": "0.1.0",
-  "private": true,
   "description": "Follow and steer Codex tasks from a Moben device by voice.",
   "license": "MIT",
   "repository": {
@@ -15,7 +14,8 @@
   },
   "files": [
     "dist",
-    "README.md"
+    "README.md",
+    "LICENSE"
   ],
   "engines": {
     "node": ">=20.12"
@@ -34,5 +34,8 @@
     "esbuild": "^0.28.0",
     "tsx": "^4.19.0",
     "typescript": "^5.6.0"
+  },
+  "publishConfig": {
+    "access": "public"
   }
 }
