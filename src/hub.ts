@@ -13,10 +13,14 @@ export type Approval = {
   requestId: number | string;
 };
 
-export type Decision = 'accept' | 'acceptForSession' | 'decline';
+export type Decision = 'accept' | 'acceptForSession' | 'decline' | 'cancel';
+export const DECISIONS: Decision[] = ['accept', 'acceptForSession', 'decline', 'cancel'];
+
+export type TurnsView = 'notLoaded' | 'summary' | 'full';
+export type TurnPage = { data: JsonValue[]; nextCursor: string | null };
 
 export type LiveEvent =
-  | { kind: 'item'; item: JsonValue }
+  | { kind: 'item'; item: JsonValue; turnId: string }
   | { kind: 'approval'; approval: Approval }
   | { kind: 'approvalDone'; decision: Decision }
   | { kind: 'turnDone'; status: string };
@@ -88,15 +92,48 @@ export class CodexHub {
   /** Completed items of latestTurn(). */
   recentItems(threadId: string): JsonValue[] { return this.live.get(threadId)?.items ?? []; }
 
+  /** The thread's metadata, without its turns. */
   async read(threadId: string) {
     try {
-      return (await this.codex.request('thread/read', { threadId, includeTurns: true })).thread;
+      return (await this.codex.request('thread/read', { threadId })).thread;
     } catch (error) {
       // A new thread's rollout stays empty until Codex flushes its first items.
       const known = this.threads.get(threadId);
       if (!known) throw error;
-      return { ...known, turns: [] };
+      return known;
     }
+  }
+
+  /** One page of the thread's turns, newest first. */
+  async turns(threadId: string, limit: number, itemsView: TurnsView, cursor: string | null = null): Promise<TurnPage> {
+    try {
+      const page = await this.codex.request('thread/turns/list', { threadId, limit, sortDirection: 'desc', itemsView, cursor });
+      return { data: page.data ?? [], nextCursor: page.nextCursor ?? null };
+    } catch (error) {
+      if (!this.threads.has(threadId)) throw error;
+      return { data: [], nextCursor: null };
+    }
+  }
+
+  /**
+   * Completed items of one turn in order, at most max of the newest; more
+   * tells whether older ones were left out.
+   */
+  async turnItems(threadId: string, turnId: string, max: number): Promise<{ items: JsonValue[]; more: boolean }> {
+    const items: JsonValue[] = [];
+    let cursor: string | null = null;
+    do {
+      let page: JsonValue;
+      try {
+        page = await this.codex.request('thread/items/list', { threadId, turnId, sortDirection: 'desc', limit: 100, cursor });
+      } catch (error) {
+        if (!this.threads.has(threadId)) throw error;
+        break;
+      }
+      for (const entry of page.data ?? []) items.push(entry.item);
+      cursor = page.nextCursor ?? null;
+    } while (cursor && items.length < max);
+    return { items: items.slice(0, max).reverse(), more: !!cursor || items.length > max };
   }
 
   /** Starts a new task in cwd with the user's first instruction. */
@@ -211,7 +248,7 @@ export class CodexHub {
     } else if (method === 'item/completed') {
       const live = this.entry(threadId);
       if (live.items.length < 500) live.items.push(params.item);
-      this.emit(threadId, { kind: 'item', item: params.item });
+      this.emit(threadId, { kind: 'item', item: params.item, turnId: params.turnId ?? live.latestTurnId ?? '' });
     }
   }
 

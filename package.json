@@ -1,6 +1,6 @@
 {
   "name": "@moben-ai/codex",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Follow and steer Codex tasks from a Moben device by voice.",
   "license": "MIT",
   "repository": {

@@ -3,7 +3,7 @@ import { homedir } from 'node:os';
 import { basename, join } from 'node:path';
 import { AppRequestError, createAppTranslator, defineApp, md, page, type AppContext } from '@moben-ai/app-sdk';
 import { CodexError, type JsonValue } from './codex';
-import { CodexHub, type Approval, type Decision, type LiveEvent } from './hub';
+import { CodexHub, DECISIONS, type Approval, type Decision, type LiveEvent, type TurnsView } from './hub';
 import { STATE_DIR } from './instance';
 import { version as VERSION } from '../package.json';
 import { clip, labelReply, renderItem, renderItemDetail, separator, userText, type Labels } from './render';
@@ -41,8 +41,10 @@ const text = createAppTranslator({
     allow: 'Allow',
     allowSession: 'Allow for this task',
     deny: 'Deny',
+    denyStop: 'Deny and stop',
     allowed: 'Allowed',
     denied: 'Denied',
+    deniedStopped: 'Denied; the turn stops',
     approvalFirst: 'Answer the approval first',
     emptySpeech: 'Nothing was recognized. Try again.',
     unknownProject: 'Unknown project',
@@ -112,8 +114,10 @@ const text = createAppTranslator({
     allow: '允许',
     allowSession: '本任务内都允许',
     deny: '拒绝',
+    denyStop: '拒绝并停止',
     allowed: '已允许',
     denied: '已拒绝',
+    deniedStopped: '已拒绝，本轮停止',
     approvalFirst: '请先处理审批',
     emptySpeech: '没有识别到内容，请再说一次。',
     unknownProject: '未知项目',
@@ -160,6 +164,10 @@ const text = createAppTranslator({
 export const hub = new CodexHub();
 const store = new SettingsStore(hub.codex, join(STATE_DIR, 'settings.json'));
 const TURN_BYTES = 48 * 1024;
+// Items read for one turn; older ones count as trimmed, like those over TURN_BYTES.
+const TURN_ITEMS = 300;
+// Items searched for an item page, newest first.
+const DETAIL_ITEMS = 2000;
 const DIRECTORY_TURNS = 200;
 const LISTED_TASKS = 50;
 
@@ -302,26 +310,41 @@ function approvalBlock(ctx: AppContext, approval: Approval) {
       { text: text(ctx, 'allow'), url: `action:${ctx.url(`${base}/accept`)}` },
       { text: text(ctx, 'allowSession'), url: `action:${ctx.url(`${base}/acceptForSession`)}` },
       { text: text(ctx, 'deny'), url: `action:${ctx.url(`${base}/decline`)}` },
+      { text: text(ctx, 'denyStop'), url: `action:${ctx.url(`${base}/cancel`)}` },
     ],
   });
   const reason = approval.reason ? `\n\n${md.text(clip(approval.reason, 200))}` : '';
   return `${sheet}\n\n${md.bold(text(ctx, 'approvalTitle'))}\n\n${md.text(what)}${reason}\n\n${md.actionSheetLink(text(ctx, 'approve'), `approve-${approval.key}`)}`;
 }
 
+type ShownTurn = { turn: JsonValue | null; live: boolean; older: boolean };
+
 /**
  * The turn the task page shows: the one this app-server saw last, or else the
- * newest in the rollout. index equals turns.length for a turn the rollout does
- * not hold yet; turns before index are earlier turns. live: hub.recentItems()
- * belong to the shown turn.
+ * newest in the rollout. turn is null for a turn the rollout does not hold
+ * yet. live: hub.recentItems() belong to the shown turn. older: earlier turns
+ * exist.
  */
-function shownTurn(threadId: string, turns: any[]): { index: number; live: boolean } {
+async function shownTurn(threadId: string): Promise<ShownTurn> {
+  // A few, in case the desktop app added turns after the one this app-server saw.
+  const { data, nextCursor } = await hub.turns(threadId, 3, 'notLoaded');
   const latest = hub.latestTurn(threadId);
-  if (latest) {
-    const index = turns.findIndex(turn => turn.id === latest);
-    if (index < 0) return { index: turns.length, live: true };
-    if (index === turns.length - 1) return { index, live: true };
-  }
-  return { index: Math.max(turns.length - 1, 0), live: false };
+  const index = latest ? data.findIndex(turn => turn.id === latest) : -1;
+  if (latest && index < 0) return { turn: null, live: true, older: data.length > 0 };
+  return { turn: data[0] ?? null, live: index === 0, older: data.length > 1 || !!nextCursor };
+}
+
+/** Turns before the shown one, newest first; more: older ones were left out. */
+async function earlierTurns(threadId: string, itemsView: TurnsView) {
+  const shown = await shownTurn(threadId);
+  const turns: JsonValue[] = [];
+  let cursor: string | null = null;
+  do {
+    const page = await hub.turns(threadId, 100, itemsView, cursor);
+    turns.push(...page.data.filter(turn => turn.id !== shown.turn?.id));
+    cursor = page.nextCursor;
+  } while (cursor && turns.length <= DIRECTORY_TURNS);
+  return { turns: turns.slice(0, DIRECTORY_TURNS), more: !!cursor || turns.length > DIRECTORY_TURNS };
 }
 
 /** When the turn started, and how it ended unless it completed. */
@@ -336,17 +359,17 @@ function turnMeta(ctx: AppContext, turn: any) {
 type Block = { text: string; role?: 'user' | 'reply' };
 
 /** A completed item once per page, or null when already shown or not shown at all. */
-function itemBlock(ctx: AppContext, threadId: string, item: JsonValue, seen: Set<string>): Block | null {
+function itemBlock(ctx: AppContext, threadId: string, turnId: string, item: JsonValue, seen: Set<string>): Block | null {
   if (item.status === 'inProgress' || seen.has(item.id)) return null;
   seen.add(item.id);
-  const markdown = renderItem(item, labels(ctx), id => ctx.url(`/t/${threadId}/i/${id}`));
+  const markdown = renderItem(item, labels(ctx), id => ctx.url(`/t/${threadId}/i/${turnId}/${id}`));
   return markdown ? { text: markdown, role: item.type === 'userMessage' ? 'user' : 'reply' } : null;
 }
 
 /** One turn's completed items as blocks. */
-function turnBlocks(ctx: AppContext, threadId: string, turn: any, seen: Set<string>) {
-  const blocks = (turn?.items ?? []).map((item: JsonValue) => itemBlock(ctx, threadId, item, seen)).filter(Boolean) as Block[];
-  if (turn?.status === 'interrupted') blocks.push({ text: `> — ${md.text(text(ctx, 'interrupted'))} —` });
+function turnBlocks(ctx: AppContext, threadId: string, turn: JsonValue, items: JsonValue[], seen: Set<string>) {
+  const blocks = items.map(item => itemBlock(ctx, threadId, turn.id, item, seen)).filter(Boolean) as Block[];
+  if (turn.status === 'interrupted') blocks.push({ text: `> — ${md.text(text(ctx, 'interrupted'))} —` });
   return blocks;
 }
 
@@ -367,19 +390,29 @@ class BlockWriter {
   }
 }
 
-/** The newest blocks within the budget, noting any left out. */
-function turnMarkdown(ctx: AppContext, blocks: Block[], writer: BlockWriter) {
+/** The newest blocks within the budget, noting any left out; trimmed: items were left out before. */
+function turnMarkdown(ctx: AppContext, blocks: Block[], writer: BlockWriter, trimmed = false) {
   let bytes = 0, start = blocks.length;
   while (start > 0 && bytes + Buffer.byteLength(blocks[start - 1].text) < TURN_BYTES) bytes += Buffer.byteLength(blocks[--start].text);
   const kept = blocks.slice(start);
-  if (start > 0) kept.unshift({ text: `> ${md.text(text(ctx, 'turnTrimmed'))}` });
+  if (start > 0 || trimmed) kept.unshift({ text: `> ${md.text(text(ctx, 'turnTrimmed'))}` });
   return kept.map(block => writer.write(block)).join('');
 }
 
+/** A turn's newest items as page text. */
+async function turnBody(ctx: AppContext, threadId: string, turn: JsonValue, seen: Set<string>, writer: BlockWriter) {
+  const { items, more } = await hub.turnItems(threadId, turn.id, TURN_ITEMS);
+  return turnMarkdown(ctx, turnBlocks(ctx, threadId, turn, items, seen), writer, more);
+}
+
+const decisionDone: Record<Decision, MessageKey> = {
+  accept: 'allowed', acceptForSession: 'allowed', decline: 'denied', cancel: 'deniedStopped',
+};
+
 function liveMarkdown(ctx: AppContext, threadId: string, event: LiveEvent, seen: Set<string>): Block | null {
-  if (event.kind === 'item') return itemBlock(ctx, threadId, event.item, seen);
+  if (event.kind === 'item') return itemBlock(ctx, threadId, event.turnId, event.item, seen);
   if (event.kind === 'approval') return { text: approvalBlock(ctx, event.approval) };
-  if (event.kind === 'approvalDone') return { text: md.text(text(ctx, event.decision === 'decline' ? 'denied' : 'allowed')) };
+  if (event.kind === 'approvalDone') return { text: md.text(text(ctx, decisionDone[event.decision])) };
   return null;
 }
 
@@ -435,11 +468,10 @@ export const app = defineApp({
       ctx.signal.addEventListener('abort', () => events.close(), { once: true });
       try {
         const thread = await hub.read(threadId);
-        const turns = thread.turns ?? [];
-        const shown = shownTurn(threadId, turns);
+        const shown = await shownTurn(threadId);
         const summary = await settingsSummary(ctx, await threadSettings(threadId, thread));
         // Only the latest turn: earlier ones are a link away, and the whole task is on the computer.
-        const earlier = shown.index > 0
+        const earlier = shown.older
           ? `\n> ${md.link(text(ctx, 'earlierTurns'), ctx.url(`/t/${threadId}/h`))}` : '';
         yield page(ctx, {
           title: taskTitle(thread),
@@ -451,10 +483,11 @@ export const app = defineApp({
           + `> ${md.link(summary, ctx.url(`/t/${threadId}/settings`))}${earlier}`).toString();
         const seen = new Set<string>();
         const writer = new BlockWriter(text(ctx, 'ai'));
-        const body = turnMarkdown(ctx, turnBlocks(ctx, threadId, turns[shown.index], seen), writer);
+        const body = shown.turn ? await turnBody(ctx, threadId, shown.turn, seen, writer) : '';
         if (body) yield body;
-        for (const item of shown.live ? hub.recentItems(threadId) : []) {
-          const block = itemBlock(ctx, threadId, item, seen);
+        const liveTurn = shown.live ? hub.latestTurn(threadId) : null;
+        if (liveTurn) for (const item of hub.recentItems(threadId)) {
+          const block = itemBlock(ctx, threadId, liveTurn, item, seen);
           if (block) yield writer.write(block);
         }
         for (const approval of hub.pendingApprovals(threadId)) yield writer.write({ text: approvalBlock(ctx, approval) });
@@ -492,49 +525,47 @@ export const app = defineApp({
     },
     '/t/:id/h': async ctx => {
       const threadId = ctx.params.id;
-      const thread = await hub.read(threadId);
-      const turns = thread.turns ?? [];
-      const earlier = shownTurn(threadId, turns).index;
+      // The summary view holds each turn's message and final reply.
+      const { turns, more } = await earlierTurns(threadId, 'summary');
       const builder = page(ctx, { title: text(ctx, 'earlierTurns'), navigation: { parentPage: ctx.url(`/t/${threadId}`) } })
         .heading(text(ctx, 'earlierTurns'));
-      // Newest first; turn n is turns[n - 1].
-      const entries: string[] = [];
-      for (let n = earlier; n > Math.max(earlier - DIRECTORY_TURNS, 0); n--) {
-        const turn = turns[n - 1];
-        const prompt = (turn.items ?? []).filter((item: any) => item.type === 'userMessage').map(userText).find(Boolean);
+      const entries = turns.map(turn => {
+        const prompt = (turn.items ?? []).filter((item: JsonValue) => item.type === 'userMessage').map(userText).find(Boolean);
         const label = prompt ? clip(prompt.replace(/\s+/g, ' '), 60) : text(ctx, 'noPrompt');
         const meta = turnMeta(ctx, turn);
-        entries.push(`${md.link(label, ctx.url(`/t/${threadId}/h/${n}`))}${meta ? `\n> ${md.text(meta)}` : ''}`);
-      }
-      if (earlier > DIRECTORY_TURNS) entries.push(`> ${md.text(text(ctx, 'turnsOmitted'))}`);
+        return `${md.link(label, ctx.url(`/t/${threadId}/h/${turn.id}`))}${meta ? `\n> ${md.text(meta)}` : ''}`;
+      });
+      if (more) entries.push(`> ${md.text(text(ctx, 'turnsOmitted'))}`);
       return builder.raw(entries.join('\n\n')).toString();
     },
-    '/t/:id/h/:n': async ctx => {
+    '/t/:id/h/:turn': async ctx => {
       const threadId = ctx.params.id;
       const thread = await hub.read(threadId);
-      const turns = thread.turns ?? [];
-      const earlier = shownTurn(threadId, turns).index;
-      const n = Number(ctx.params.n);
-      if (!Number.isInteger(n) || n < 1 || n > earlier) throw new AppRequestError(404, text(ctx, 'turnMissing'));
-      const turn = turns[n - 1];
+      // Newest first: the previous turn is the next entry.
+      const { turns } = await earlierTurns(threadId, 'notLoaded');
+      const index = turns.findIndex(turn => turn.id === ctx.params.turn);
+      if (index < 0) throw new AppRequestError(404, text(ctx, 'turnMissing'));
+      const turn = turns[index];
       // Replace between turns, so the menu key returns to the directory.
-      const turnUrl = (at: number) => `${ctx.url(`/t/${threadId}/h/${at}`)}#history=replace`;
+      const turnUrl = (other: JsonValue) => `${ctx.url(`/t/${threadId}/h/${other.id}`)}#history=replace`;
       const links = [
-        ...(n > 1 ? [md.link(text(ctx, 'previousTurn'), turnUrl(n - 1))] : []),
-        ...(n < earlier ? [md.link(text(ctx, 'nextTurn'), turnUrl(n + 1))] : []),
+        ...(turns[index + 1] ? [md.link(text(ctx, 'previousTurn'), turnUrl(turns[index + 1]))] : []),
+        ...(index > 0 ? [md.link(text(ctx, 'nextTurn'), turnUrl(turns[index - 1]))] : []),
       ].join(' · ');
       const meta = turnMeta(ctx, turn);
-      const body = turnMarkdown(ctx, turnBlocks(ctx, threadId, turn, new Set()), new BlockWriter(text(ctx, 'ai')));
+      const body = await turnBody(ctx, threadId, turn, new Set(), new BlockWriter(text(ctx, 'ai')));
       const builder = page(ctx, { title: taskTitle(thread), navigation: { parentPage: ctx.url(`/t/${threadId}/h`) } });
       if (meta) builder.raw(`> ${md.text(meta)}`);
       builder.raw(body);
       if (links) builder.raw(`> ${links}`);
       return builder.toString();
     },
-    '/t/:id/i/:item': async ctx => {
-      const thread = await hub.read(ctx.params.id);
-      const item = (thread.turns ?? []).flatMap((turn: any) => turn.items ?? []).find((it: any) => it.id === ctx.params.item);
-      const builder = page(ctx, { title: taskTitle(thread), navigation: { parentPage: ctx.url(`/t/${ctx.params.id}`) } });
+    '/t/:id/i/:turn/:item': async ctx => {
+      const threadId = ctx.params.id;
+      const thread = await hub.read(threadId);
+      const { items } = await hub.turnItems(threadId, ctx.params.turn, DETAIL_ITEMS);
+      const item = items.find(it => it.id === ctx.params.item);
+      const builder = page(ctx, { title: taskTitle(thread), navigation: { parentPage: ctx.url(`/t/${threadId}`) } });
       const body = item ? renderItemDetail(item) : '';
       return (body ? builder.raw(body) : builder.paragraph(text(ctx, 'itemMissing'))).toString();
     },
@@ -542,7 +573,7 @@ export const app = defineApp({
   actions: {
     '/t/:id/approve/:key/:decision': async ctx => {
       const decision = ctx.params.decision as Decision;
-      if (!['accept', 'acceptForSession', 'decline'].includes(decision)) throw new AppRequestError(400, 'Bad decision');
+      if (!DECISIONS.includes(decision)) throw new AppRequestError(400, 'Bad decision');
       // Only this task's approvals: a key from another task must not be answered.
       // One already answered or expired just shows the task again.
       if (hub.pendingApprovals(ctx.params.id).some(approval => approval.key === ctx.params.key)) {
