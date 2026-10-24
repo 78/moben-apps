@@ -22,6 +22,7 @@
   },
   "scripts": {
     "start": "tsx src/cli.ts run",
+    "check": "tsx node_modules/@moben-ai/app-sdk/dist/cli.js app validate",
     "build": "esbuild src/cli.ts --bundle --platform=node --target=node20 --format=cjs --external:@moben-ai/app-sdk --outfile=dist/cli.js",
     "typecheck": "tsc --noEmit",
     "prepack": "npm run build"

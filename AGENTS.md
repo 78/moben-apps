@@ -46,7 +46,7 @@ On servers and in CI, create a key in Moben Console under "Developer apps" and s
 
 ## Self-test checklist
 
-- Before connecting Computer Status, run `npx moben validate` and `npx moben tool get_computer_status` from `computer/`. From `codex/`, run `npx moben app validate`, `npm run typecheck` and `npm run build`. The CLI syntax follows each app's installed SDK version. Local validation runs the cloud's checks without connecting; fix every error and warning.
+- Before connecting Computer Status, run `npx moben validate` and `npx moben tool get_computer_status` from `computer/`. From `codex/`, run `npm run check`, `npm run typecheck` and `npm run build`. Codex's check script loads the SDK validator through `tsx` so extensionless TypeScript imports resolve on Node.js 20 and 22. The CLI syntax follows each app's installed SDK version. Local validation runs the cloud's checks without connecting; fix every error and warning.
 - After starting, the log shows `online`. If the handshake is rejected, fix the manifest according to the issues in the log and restart.
 - Open the home page and every subpage on the device and check the content, with the device language set to both English and Chinese.
 - Hold the voice key and ask something that triggers each tool (for example "What are my computer's specs?") and check that the answer uses fresh data.

@@ -31,15 +31,22 @@ Only one copy runs on a computer: starting it again says it is already running. 
 
 ## Development
 
+This app lives in `codex/` in the Moben Apps repository. From the repository root:
+
 ```sh
+cd codex
 npm install
 npm start                 # runs src/cli.ts with tsx
-npx moben app validate    # checks the pages the way the Moben cloud does, without connecting (entry app.ts)
+npm run check            # validates pages locally through tsx (entry app.ts)
 npm run typecheck
 npm run build             # bundles dist/cli.js
 ```
 
 `src/app.ts` defines the Moben app (pages, actions, voice routes), `src/hub.ts` tracks tasks through a private `codex app-server` (`src/codex.ts`), and `src/cli.ts` is the command line. See the [Moben app SDK](https://www.npmjs.com/package/@moben-ai/app-sdk) for the page and voice contract.
+
+Run all development commands from `codex/`. Dependencies and build output stay in this directory; user settings remain in `~/.moben-codex/`. The npm package name and `moben-codex` command are unchanged.
+
+`npm run check` loads the SDK validator through `tsx` so extensionless TypeScript imports work on Node.js 20 and 22. To inspect a specific page, use `npx tsx node_modules/@moben-ai/app-sdk/dist/cli.js app page / --locale zh-CN`.
 
 ## License
 
