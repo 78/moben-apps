@@ -26,6 +26,6 @@ Keep app-specific `.env` files inside their app directory. Never commit develope
 
 ## Repository history
 
-Computer Status was moved from the repository root to `computer/`. Moben Codex was imported into `codex/` with its original commits preserved through a Git subtree merge. Both apps are maintained in this repository; neither directory is a nested Git repository. Codex package metadata still links to its existing public repository.
+Computer Status was moved from the repository root to `computer/`. Moben Codex was imported into `codex/` with its original commits preserved through a Git subtree merge. Both apps are maintained in [78/moben-apps](https://github.com/78/moben-apps); neither directory is a nested Git repository. Codex package metadata points to the `codex/` directory in this repository.
 
 Shared app development rules are in [AGENTS.md](AGENTS.md).

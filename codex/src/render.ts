@@ -32,11 +32,28 @@ export const commandText = (command: unknown) => {
  * What the user typed, as plain text. The desktop composer turns pasted URLs
  * into [url](url) or <url>; the device shows the label once.
  */
-export const userText = (item: JsonValue) => (item.content ?? [])
-  .filter((part: JsonValue) => part.type === 'text').map((part: JsonValue) => part.text).join('\n')
-  .replace(/<(https?:\/\/[^\s>]+)>/g, '$1')
-  .replace(/\[([^\]\n]+)\]\((https?:\/\/[^\s)]+)\)/g, '$1')
-  .trim();
+export const userText = (item: JsonValue) => {
+  let text = (item.content ?? [])
+    .filter((part: JsonValue) => part.type === 'text').map((part: JsonValue) => part.text).join('\n');
+  // The desktop records question replies as an internal envelope. Only the
+  // user's answers belong on the device, before the normal display limit.
+  const reply = text.trim().match(/^<send_user_message_question_reply>([\s\S]*?)(?:<\/send_user_message_question_reply>)?$/);
+  if (reply) {
+    try {
+      const answers: unknown = JSON.parse(reply[1]);
+      text = Array.isArray(answers)
+        ? answers.flatMap(answer => typeof answer?.answer === 'string' ? [answer.answer] : []).join('\n')
+        : '';
+    } catch {
+      // A malformed internal reply must not expose its payload as user text.
+      return '';
+    }
+  }
+  return text
+    .replace(/<(https?:\/\/[^\s>]+)>/g, '$1')
+    .replace(/\[([^\]\n]+)\]\((https?:\/\/[^\s)]+)\)/g, '$1')
+    .trim();
+};
 
 /**
  * Codex writes Markdown; keep it, but drop HTML comments (page metadata and

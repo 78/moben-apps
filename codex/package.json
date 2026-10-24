@@ -5,10 +5,11 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/78/moben-codex.git"
+    "url": "git+https://github.com/78/moben-apps.git",
+    "directory": "codex"
   },
-  "homepage": "https://github.com/78/moben-codex#readme",
-  "bugs": "https://github.com/78/moben-codex/issues",
+  "homepage": "https://github.com/78/moben-apps/tree/main/codex#readme",
+  "bugs": "https://github.com/78/moben-apps/issues",
   "bin": {
     "moben-codex": "dist/cli.js"
   },
@@ -28,7 +29,7 @@
     "prepack": "npm run build"
   },
   "dependencies": {
-    "@moben-ai/app-sdk": "^0.5.0"
+    "@moben-ai/app-sdk": "^0.5.1"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",

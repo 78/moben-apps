@@ -1,4 +1,6 @@
 import { randomBytes } from 'node:crypto';
+import type { PageActivity } from '@moben-ai/app-sdk';
+import { TaskActivity } from './activity';
 import { CodexServer, type JsonValue, type ServerRequest } from './codex';
 import { commandText } from './render';
 import type { SettingsChoice, TaskSettings } from './settings';
@@ -23,7 +25,9 @@ export type LiveEvent =
   | { kind: 'item'; item: JsonValue; turnId: string }
   | { kind: 'approval'; approval: Approval }
   | { kind: 'approvalDone'; decision: Decision }
-  | { kind: 'turnDone'; status: string };
+  | { kind: 'turnDone'; status: string }
+  | { kind: 'activity'; state: PageActivity }
+  | { kind: 'closed' };
 
 /** Push-based async iterator; a page stream reads it until it returns. */
 export class EventQueue<T> implements AsyncIterable<T> {
@@ -45,7 +49,7 @@ export class EventQueue<T> implements AsyncIterable<T> {
 // items: completed items of turn latestTurnId, which the rollout file may not
 // hold yet when a page opens right after the turn starts. turnId is set only
 // while that turn runs.
-type Live = { turnId: string | null; latestTurnId: string | null; items: JsonValue[]; listeners: Set<EventQueue<LiveEvent>> };
+type Live = { activity: TaskActivity; awaitingCompletion: boolean; latestTurnId: string | null; items: JsonValue[]; listeners: Set<EventQueue<LiveEvent>> };
 
 export class CodexHub {
   readonly codex = new CodexServer();
@@ -67,7 +71,17 @@ export class CodexHub {
     this.codex.on('exit', () => this.onExit());
   }
 
-  isRunning(threadId: string) { return !!this.live.get(threadId)?.turnId; }
+  isRunning(threadId: string) {
+    const live = this.live.get(threadId);
+    // A runtime idle notification may precede the final item/turn event. Keep
+    // its page subscribed, while activity() already clears the visible status.
+    return !!live && (live.activity.running || live.awaitingCompletion);
+  }
+  activity(threadId: string): PageActivity {
+    const live = this.live.get(threadId);
+    if (!live?.activity.running) return 'idle';
+    return this.pendingApprovals(threadId).length ? 'waitingApproval' : live.activity.state;
+  }
   pendingApprovals(threadId: string) { return [...this.approvals.values()].filter(a => a.threadId === threadId); }
 
   subscribe(threadId: string): EventQueue<LiveEvent> {
@@ -95,7 +109,12 @@ export class CodexHub {
   /** The thread's metadata, without its turns. */
   async read(threadId: string) {
     try {
-      return (await this.codex.request('thread/read', { threadId })).thread;
+      const live = this.entry(threadId);
+      const revision = live.activity.revision;
+      const { thread } = await this.codex.request('thread/read', { threadId });
+      // A slow snapshot must not overwrite newer notifications.
+      if (live.activity.revision === revision) this.applyStatus(threadId, thread?.status);
+      return thread;
     } catch (error) {
       // A new thread's rollout stays empty until Codex flushes its first items.
       const known = this.threads.get(threadId);
@@ -166,7 +185,10 @@ export class CodexHub {
   /** Resumes the thread in this app-server; fails while another Codex writes to it. */
   async ensureLoaded(threadId: string) {
     if (this.loaded.has(threadId)) return;
+    const live = this.entry(threadId);
+    const revision = live.activity.revision;
     const resumed = await this.codex.request('thread/resume', { threadId, excludeTurns: true });
+    if (live.activity.revision === revision) this.applyStatus(threadId, resumed.thread?.status);
     this.threads.set(threadId, resumed.thread);
     this.loaded.add(threadId);
     this.remember(threadId, resumed);
@@ -175,14 +197,14 @@ export class CodexHub {
   /** Steers the running turn, or starts the next one when the task is idle. */
   async send(threadId: string, text: string) {
     await this.ensureLoaded(threadId);
-    const turnId = this.live.get(threadId)?.turnId;
+    const turnId = this.live.get(threadId)?.activity.turnId;
     if (turnId) {
       try {
         await this.codex.request('turn/steer', { threadId, expectedTurnId: turnId, input: [{ type: 'text', text }] });
         return;
       } catch (error) {
         // The turn ended in the meantime; the text starts the next one.
-        if (this.live.get(threadId)?.turnId === turnId) throw error;
+        if (this.live.get(threadId)?.activity.turnId === turnId) throw error;
       }
     }
     await this.startTurn(threadId, text);
@@ -191,8 +213,11 @@ export class CodexHub {
   decide(key: string, decision: Decision): Approval | null {
     const approval = this.approvals.get(key);
     if (!approval) return null;
+    const previous = this.activity(approval.threadId);
     this.approvals.delete(key);
+    ++this.entry(approval.threadId).activity.revision;
     this.codex.respond(approval.requestId, { decision });
+    this.publishActivity(approval.threadId, previous);
     this.emit(approval.threadId, { kind: 'approvalDone', decision });
     return approval;
   }
@@ -218,16 +243,41 @@ export class CodexHub {
 
   private beginTurn(threadId: string, turnId: string) {
     const live = this.entry(threadId);
-    if (live.turnId === turnId) return;
-    live.turnId = turnId;
-    if (live.latestTurnId !== turnId) live.items = [];
-    live.latestTurnId = turnId;
+    const previous = this.activity(threadId);
+    if (!live.activity.start(turnId)) return;
+    live.awaitingCompletion = true;
+    this.rememberTurn(live);
+    // An old approval cannot block a new turn.
+    for (const approval of this.pendingApprovals(threadId))
+      if (approval.turnId !== turnId) this.approvals.delete(approval.key);
+    this.publishActivity(threadId, previous);
+  }
+
+  private rememberTurn(live: Live) {
+    const turnId = live.activity.turnId;
+    if (turnId && live.latestTurnId !== turnId) { live.items = []; live.latestTurnId = turnId; }
   }
 
   private entry(threadId: string): Live {
     let live = this.live.get(threadId);
-    if (!live) this.live.set(threadId, live = { turnId: null, latestTurnId: null, items: [], listeners: new Set() });
+    if (!live) this.live.set(threadId, live = { activity: new TaskActivity(), awaitingCompletion: false, latestTurnId: null, items: [], listeners: new Set() });
     return live;
+  }
+
+  private publishActivity(threadId: string, previous: PageActivity) {
+    const state = this.activity(threadId);
+    if (state !== previous) this.emit(threadId, { kind: 'activity', state });
+  }
+
+  private applyStatus(threadId: string, status: JsonValue) {
+    const live = this.entry(threadId);
+    const previous = this.activity(threadId);
+    if (!live.activity.status(status)) return;
+    if (!live.activity.running) {
+      for (const approval of this.pendingApprovals(threadId)) this.approvals.delete(approval.key);
+    }
+    this.publishActivity(threadId, previous);
+    if (status.type === 'notLoaded' || status.type === 'systemError') { live.awaitingCompletion = false; this.emit(threadId, { kind: 'closed' }); }
   }
 
   private emit(threadId: string, event: LiveEvent) {
@@ -235,20 +285,52 @@ export class CodexHub {
   }
 
   private onNotification(method: string, params: JsonValue) {
-    const threadId = params?.threadId as string | undefined;
-    if (!threadId) return;
+    const threadId = params?.threadId;
+    if (typeof threadId !== 'string' || !threadId) return;
+    const live = this.entry(threadId);
+    const previous = this.activity(threadId);
     if (method === 'turn/started') {
-      this.beginTurn(threadId, params.turn.id);
+      if (typeof params.turn?.id === 'string') this.beginTurn(threadId, params.turn.id);
     } else if (method === 'turn/completed') {
-      const live = this.entry(threadId);
-      if (live.turnId === params.turn.id) live.turnId = null;
+      const turnId = params.turn?.id;
+      if (typeof turnId !== 'string' || live.latestTurnId && live.latestTurnId !== turnId) return;
+      live.activity.stop(turnId);
+      live.awaitingCompletion = false;
       for (const approval of this.pendingApprovals(threadId))
-        if (approval.turnId === params.turn.id) this.approvals.delete(approval.key);
+        if (approval.turnId === turnId) this.approvals.delete(approval.key);
+      this.publishActivity(threadId, previous);
       this.emit(threadId, { kind: 'turnDone', status: params.turn.status });
+    } else if (method === 'thread/status/changed') {
+      this.applyStatus(threadId, params.status);
+    } else if (method === 'thread/closed') {
+      this.applyStatus(threadId, { type: 'notLoaded' });
+    } else if (method === 'item/started') {
+      if (!live.activity.started(params.turnId, params.item)) return;
+      this.rememberTurn(live);
+      this.publishActivity(threadId, previous);
     } else if (method === 'item/completed') {
-      const live = this.entry(threadId);
-      if (live.items.length < 500) live.items.push(params.item);
-      this.emit(threadId, { kind: 'item', item: params.item, turnId: params.turnId ?? live.latestTurnId ?? '' });
+      const item = params.item;
+      const turnId = params.turnId ?? live.activity.turnId ?? live.latestTurnId;
+      if (typeof item?.id !== 'string' || typeof item.type !== 'string' || typeof turnId !== 'string') return;
+      if (live.activity.finished(turnId, item.id)) {
+        this.rememberTurn(live);
+        this.publishActivity(threadId, previous);
+      }
+      // Content and activity are separate: a final reply can arrive after an
+      // idle notification without reviving work or replacing a newer turn.
+      if (live.latestTurnId && live.latestTurnId !== turnId || live.items.some(saved => saved.id === item.id)) return;
+      live.latestTurnId ??= turnId;
+      ++live.activity.revision;
+      if (live.items.length < 500) live.items.push(item);
+      this.emit(threadId, { kind: 'item', item, turnId });
+    } else if (['item/reasoning/summaryTextDelta', 'item/reasoning/textDelta', 'item/reasoning/summaryPartAdded'].includes(method)) {
+      if (!live.activity.reasoning(params.turnId, params.itemId)) return;
+      this.rememberTurn(live);
+      this.publishActivity(threadId, previous);
+    } else if (method === 'serverRequest/resolved') {
+      for (const approval of this.pendingApprovals(threadId))
+        if (String(approval.requestId) === String(params.requestId)) { this.approvals.delete(approval.key); ++live.activity.revision; }
+      this.publishActivity(threadId, previous);
     }
   }
 
@@ -256,11 +338,22 @@ export class CodexHub {
     const params = request.params ?? {};
     const kind = request.method === 'item/commandExecution/requestApproval' ? 'command'
       : request.method === 'item/fileChange/requestApproval' ? 'fileChange' : null;
-    if (!kind || !params.threadId) {
+    if (!kind || typeof params.threadId !== 'string' || !params.threadId) {
       // Questions, MCP prompts and permission profiles need the desktop app.
       this.codex.respondError(request.id, 'Not supported on Moben');
       return;
     }
+    const live = this.entry(params.threadId);
+    if (typeof params.turnId !== 'string' || live.activity.turnId && live.activity.turnId !== params.turnId) {
+      this.codex.respondError(request.id, 'Approval belongs to an inactive turn');
+      return;
+    }
+    if (!live.activity.turnId) this.beginTurn(params.threadId, params.turnId);
+    if (!live.activity.running || live.activity.turnId !== params.turnId) {
+      this.codex.respondError(request.id, 'Approval belongs to an inactive turn');
+      return;
+    }
+    const previous = this.activity(params.threadId);
     const approval: Approval = {
       key: randomBytes(6).toString('hex'),
       threadId: params.threadId,
@@ -271,6 +364,8 @@ export class CodexHub {
       requestId: request.id,
     };
     this.approvals.set(approval.key, approval);
+    ++live.activity.revision;
+    this.publishActivity(approval.threadId, previous);
     this.emit(approval.threadId, { kind: 'approval', approval });
   }
 
@@ -280,9 +375,11 @@ export class CodexHub {
     this.threads.clear();
     this.settings.clear();
     for (const [threadId, live] of this.live) {
-      if (!live.turnId) continue;
-      live.turnId = null;
-      this.emit(threadId, { kind: 'turnDone', status: 'failed' });
+      const running = live.activity.running || live.awaitingCompletion;
+      live.activity.stop();
+      live.awaitingCompletion = false;
+      this.emit(threadId, { kind: 'activity', state: 'idle' });
+      this.emit(threadId, running ? { kind: 'turnDone', status: 'failed' } : { kind: 'closed' });
     }
   }
 }

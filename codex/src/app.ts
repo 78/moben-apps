@@ -27,7 +27,6 @@ const text = createAppTranslator({
     newTaskHint: 'Say the task, release to start',
     newTaskBody: 'Hold the voice key and say what Codex should do in {dir}.',
     taskHint: 'Say the next instruction',
-    working: 'Codex is working…',
     idleNote: '(Hold the voice key for the next instruction)',
     openOnDesktop: 'This task is open in Codex on the computer, and Codex lets only one place write to it. Continue there, or quit Codex on the computer and try again.',
     codexFailed: 'Codex error: {message}',
@@ -100,7 +99,6 @@ const text = createAppTranslator({
     newTaskHint: '说出任务，松开开始',
     newTaskBody: '按住语音键，说出要 Codex 在 {dir} 里做什么。',
     taskHint: '说出下一步指令',
-    working: 'Codex 正在工作…',
     idleNote: '（按住语音键给出下一步指令）',
     openOnDesktop: '这个任务正在电脑上的 Codex 里打开，Codex 只允许一处写入。请在电脑上继续，或退出电脑上的 Codex 后再试。',
     codexFailed: 'Codex 出错：{message}',
@@ -241,20 +239,25 @@ const SHEET_ITEMS = 10;
 
 type SettingOption = { value: string; label: string };
 
-function settingOptions(ctx: AppContext, models: ModelInfo[], model: ModelInfo): Record<SettingsField, SettingOption[]> {
+function settingOptions(ctx: AppContext, models: ModelInfo[], model: ModelInfo, settings: TaskSettings): Record<SettingsField, SettingOption[]> {
+  const visible = (options: SettingOption[], current: string) => {
+    const index = options.findIndex(option => option.value === current);
+    return index < SHEET_ITEMS ? options.slice(0, SHEET_ITEMS)
+      : [...options.slice(0, SHEET_ITEMS - 1), options[index]];
+  };
   return {
-    model: models.slice(0, SHEET_ITEMS).map(m => ({ value: m.id, label: m.name })),
-    effort: model.efforts.slice(0, SHEET_ITEMS).map(effort =>
-      ({ value: effort, label: EFFORT_LABELS[effort] ? text(ctx, EFFORT_LABELS[effort]) : effort })),
-    serviceTier: [{ id: STANDARD_TIER, name: STANDARD_TIER }, ...model.tiers].slice(0, SHEET_ITEMS).map(tier =>
-      ({ value: tier.id, label: TIER_LABELS[tier.id] ? text(ctx, TIER_LABELS[tier.id]) : tier.name })),
+    model: visible(models.map(m => ({ value: m.id, label: m.name })), settings.model),
+    effort: visible(model.efforts.map(effort =>
+      ({ value: effort, label: EFFORT_LABELS[effort] ? text(ctx, EFFORT_LABELS[effort]) : effort })), settings.effort),
+    serviceTier: visible([{ id: STANDARD_TIER, name: STANDARD_TIER }, ...model.tiers].map(tier =>
+      ({ value: tier.id, label: TIER_LABELS[tier.id] ? text(ctx, TIER_LABELS[tier.id]) : tier.name })), settings.serviceTier),
   };
 }
 
 async function describeSettings(ctx: AppContext, settings: TaskSettings) {
   const models = await store.models();
   const model = models.find(m => m.id === settings.model)!;
-  const options = settingOptions(ctx, models, model);
+  const options = settingOptions(ctx, models, model, settings);
   const label = (field: SettingsField) =>
     options[field].find(option => option.value === settings[field])?.label ?? settings[field];
   return { options, label };
@@ -272,6 +275,7 @@ async function settingsMarkdown(ctx: AppContext, actionBase: string, settings: T
     items: options[field].map(option => ({
       text: `${option.value === settings[field] ? '✓ ' : ''}${option.label}`,
       url: `action:${ctx.url(`${actionBase}/${field}/${encodeURIComponent(option.value)}`)}`,
+      ...(option.value === settings[field] ? { selected: true } : {}),
     })),
   }));
   const lines = SETTINGS_FIELDS.map(field =>
@@ -495,19 +499,27 @@ export const app = defineApp({
           yield `\n> ${md.text(text(ctx, 'idleNote'))}\n`;
           return;
         }
-        yield writer.write({ text: `> ${md.text(text(ctx, 'working'))}` });
+        ctx.setActivity(hub.activity(threadId));
         for await (const event of events) {
+          if (event.kind === 'closed') { ctx.setActivity('idle'); return; }
+          if (event.kind === 'activity') { ctx.setActivity(hub.activity(threadId)); continue; }
           if (event.kind === 'turnDone') {
-            if (hub.isRunning(threadId)) continue; // A steer started the next turn.
+            if (hub.isRunning(threadId)) { // A steer started the next turn.
+              ctx.setActivity(hub.activity(threadId));
+              continue;
+            }
+            ctx.setActivity('idle');
             const ended = event.status === 'completed' ? 'turnCompleted'
               : event.status === 'interrupted' ? 'turnInterrupted' : 'turnFailed';
             yield `\n> ${md.text(text(ctx, ended))}\n`;
             return;
           }
+          ctx.setActivity(hub.activity(threadId));
           const block = liveMarkdown(ctx, threadId, event, seen);
           if (block) yield writer.write(block);
         }
       } finally {
+        ctx.setActivity('idle');
         events.close();
       }
     },
