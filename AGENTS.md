@@ -1,12 +1,17 @@
 # AGENTS.md: building a Moben remote app
 
-This directory is a minimal Moben remote app, "Computer Status". The app runs on the user's own computer; Moben devices open its pages through the cloud and can ask about the computer's configuration and status in voice chat. It only uses built-in Node modules and works on macOS, Linux and Windows. Use this structure for other apps; the protocol is described in `REMOTE_APPS.md` inside the SDK package.
+This repository contains Moben remote apps, each in its own directory with independent dependencies and startup commands:
+
+- `computer/`: Computer Status, showing this computer's configuration and status.
+- `codex/`: Moben Codex, following and steering Codex tasks from a Moben device. Its published package is `@moben-ai/codex`.
+
+These instructions apply to every app. Run installation, development and validation commands from the relevant app directory, not the repository root. See each app's README for its commands. Apps run on the user's own computer; Moben devices open their pages through the cloud. Prefer built-in Node modules and support macOS, Linux and Windows. The protocol is described in `REMOTE_APPS.md` inside each app's SDK package.
 
 ## Running
 
-1. Install Node.js 20.12 or newer, then run `npm install` in this directory. The SDK `@moben-ai/app-sdk` comes from npm.
+1. Install Node.js 20.12 or newer, enter `computer/` or `codex/`, then run `npm install`. The SDK `@moben-ai/app-sdk` comes from npm. Each app keeps its own `package.json` and lockfile; this repository does not use npm workspaces.
 2. Run `npx moben login` and open the link it prints: sign in to Moben and approve. The developer key is saved for this computer and every app on it uses it. `npx moben whoami` shows the account and its apps.
-3. Run `npm start`. When `[machine] online` appears, open "Computer Status" from the app list on the device. The app appears in Console the first time it connects.
+3. Run `npm start` from the app directory. When the log shows `online`, open the app from the device's app list. The app appears in Console the first time it connects.
 
 On servers and in CI, create a key in Moben Console under "Developer apps" and set `MOBEN_DEVELOPER_KEY` in the environment or in `.env` instead. Never put a key in code or commit it.
 
@@ -16,7 +21,7 @@ On servers and in CI, create a key in Moben Console under "Developer apps" and s
 
 - `manifest.id` is your own ID for the app, unique within your account: 2–31 lowercase letters, digits or hyphens, such as `computer-status`. Give each new app a new ID; changing it registers a different app. The cloud adds your account's namespace to form the public ID. `entry` points to the home route.
 - `pages`: route → function returning Markdown. Start with `page(ctx, { title })` for the metadata line, then build the body with `heading`, `paragraph`, `list` and `raw`. Pages that should update themselves add `refresh: { intervalSeconds: 60 }` (at least 30 seconds).
-- `actions` (not used here): route → run the operation, then return `ctx.renderCurrentPage()` or `ctx.renderPage('/path')`. Create buttons with `md.action(label, ctx.url('/path'), { confirm: 'Are you sure?' })`.
+- `actions`: route → run the operation, then return `ctx.renderCurrentPage()` or `ctx.renderPage('/path')`. Create buttons with `md.action(label, ctx.url('/path'), { confirm: 'Are you sure?' })`.
 - `tools`: name → `(ctx, args) => ({ result, uiEffects? })`. Tools that change data declare `mutates: true` and return `uiEffects: [{ type: 'reload' }]` to refresh the device's current page.
 - Routes start with `/`; `:name` matches one path segment and is read from `ctx.params.name`. Query parameters are in `ctx.query`.
 
@@ -41,7 +46,7 @@ On servers and in CI, create a key in Moben Console under "Developer apps" and s
 
 ## Self-test checklist
 
-- Before connecting, run `npx moben validate` and `npx moben tool get_computer_status`. They run the app locally with the cloud's checks and print the page and tool result; fix every error and warning.
+- Before connecting Computer Status, run `npx moben validate` and `npx moben tool get_computer_status` from `computer/`. From `codex/`, run `npx moben app validate`, `npm run typecheck` and `npm run build`. The CLI syntax follows each app's installed SDK version. Local validation runs the cloud's checks without connecting; fix every error and warning.
 - After starting, the log shows `online`. If the handshake is rejected, fix the manifest according to the issues in the log and restart.
 - Open the home page and every subpage on the device and check the content, with the device language set to both English and Chinese.
 - Hold the voice key and ask something that triggers each tool (for example "What are my computer's specs?") and check that the answer uses fresh data.
