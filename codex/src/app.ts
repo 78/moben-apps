@@ -479,7 +479,6 @@ export const app = defineApp({
           ? `\n> ${md.link(text(ctx, 'earlierTurns'), ctx.url(`/t/${threadId}/h`))}` : '';
         yield page(ctx, {
           title: taskTitle(thread),
-          interaction: { follow: true },
           navigation: { parentPage: ctx.url('/') },
           voice: { mode: 'capture', url: ctx.url(`/t/${threadId}/voice`), hint: text(ctx, 'taskHint') },
         }).raw(`# ${md.text(taskTitle(thread))}\n`

@@ -29,7 +29,7 @@
     "prepack": "npm run build"
   },
   "dependencies": {
-    "@moben-ai/app-sdk": "^0.5.1"
+    "@moben-ai/app-sdk": "0.7.2"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",

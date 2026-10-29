@@ -23,9 +23,9 @@ Run from `computer/` without connecting to the cloud:
 
 ```sh
 npm run check
-npx moben tool get_computer_status
-npx moben page / --locale en --timezone Asia/Shanghai
-npx moben page / --locale zh-CN --timezone Asia/Shanghai
+npx moben app tool get_computer_status
+npx moben app page / --locale en --timezone Asia/Shanghai
+npx moben app page / --locale zh-CN --timezone Asia/Shanghai
 ```
 
 `npm run dev` restarts the app when files change. Local dependencies, `.env` and `.runtime/` stay inside `computer/` and are ignored by Git.

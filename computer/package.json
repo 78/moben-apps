@@ -8,11 +8,11 @@
   },
   "scripts": {
     "start": "tsx app.ts",
-    "dev": "moben dev",
-    "check": "moben validate"
+    "dev": "moben app dev",
+    "check": "moben app validate"
   },
   "dependencies": {
-    "@moben-ai/app-sdk": "^0.4.2"
+    "@moben-ai/app-sdk": "0.7.2"
   },
   "devDependencies": {
     "tsx": "^4.19.0"
